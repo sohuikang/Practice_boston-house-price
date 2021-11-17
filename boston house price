@@ -1,0 +1,191 @@
+# 보스턴 집값 데이터를 로드하기 위한 객체 참조
+from sklearn import datasets
+
+# pandas 기본 패키지
+from pandas import DataFrame
+from pandas import merge
+
+# 시각화
+from matplotlib import pyplot as plt
+import seaborn as sns
+
+# 수치연산
+import numpy as np
+
+# 모델구성
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+
+# 표준화 처리 패키지
+from sklearn.preprocessing import StandardScaler
+
+# 학습에 대한 콜백함수 처리용 패키지 참조
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.callbacks import ReduceLROnPlateau
+
+# 데이터 분할
+from sklearn.model_selection import train_test_split
+
+# 회귀분석 수행을 위한 통계 패키지 (머신러닝과는 연관 없음)
+from statsmodels.formula.api import ols
+
+# 주성분 분석 관련 패키지
+from pca import pca
+
+
+#데이터셋 준비
+dataset = datasets.load_boston()
+dataset.keys()
+
+#데이터 설명글 확인
+print(dataset['DESCR'])
+
+#데이터프레임 만들기
+boston_df = DataFrame(dataset['data'], columns=dataset['feature_names'])
+boston_df['MEDV'] = dataset['target']
+
+#데이터 전처리
+#결측치 확인
+boston_df.isna().sum()
+
+#탐색적 데이터 분석
+boston_df.info()
+
+#기초통계량 확인
+boston_df.describe()
+
+#데이터 분포 확인
+fig, ax = plt.subplots(3, 5, figsize=(30, 15), dpi=100)
+
+for i, v in enumerate(boston_df.columns):
+    sns.boxplot(y=boston_df[v], ax=ax[i//5][i%5])
+    ax[i//5][i%5].set_title(v)
+    
+plt.show()
+plt.close()
+
+#데이터셋 분할
+x_train_set = boston_df.drop('MEDV', axis=1)
+y_train_set = boston_df.filter(['MEDV'])
+print("독립변수 데이터셋 크기: %s, 종속변수 데이터셋 크기: %s" % (x_train_set.shape, y_train_set.shape))
+
+x_train, x_test, y_train, y_test = train_test_split(x_train_set, y_train_set, test_size=0.3)
+print("학습 데이터 크기: %s, 검증 데이터셋 크기: %s" % (x_train.shape, x_test.shape))
+
+#데이터 표준화
+scaler = StandardScaler()
+
+std_x_train = DataFrame(scaler.fit_transform(x_train), columns=x_train.columns)
+std_x_test = DataFrame(scaler.transform(x_test), columns=x_test.columns)
+
+std_y_train = DataFrame(scaler.fit_transform(y_train), columns=y_train.columns)
+std_y_test = DataFrame(scaler.transform(y_test), columns=y_test.columns)
+
+#PCA(주성분) 분석을 통해 연관성 높은 변수들 찾기
+pca_model = pca(n_components=len(std_x_train.columns))
+fit = pca_model.fit_transform(std_x_train)
+topfeat_df = fit['topfeat']
+topfeat_df
+
+#연관성 높은 데이터 추출
+qdf = topfeat_df.query("type=='best'")
+qdf
+
+#추출된 변수 이름 얻기
+pca_names = list(qdf['feature'])
+pca_names
+
+#연관성이 높은 변수만 선정
+pca_x_train = std_x_train.filter(pca_names)
+pca_x_test = std_x_test.filter(pca_names)
+pca_x_test
+
+#모델 개발
+model = Sequential()
+model.add(Dense(64, activation='relu', input_shape=(len(pca_x_train.columns) ,)))
+model.add(Dense(32, activation='relu'))
+model.add(Dense(1, activation='linear'))
+model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+model.summary()
+
+#학습 하기
+result = model.fit(pca_x_train, std_y_train, epochs = 500, validation_data = (pca_x_test, std_y_test), callbacks = [
+    EarlyStopping(monitor = 'val_loss', patience=5, verbose = 1),
+    ReduceLROnPlateau(monitor= "val_loss", patience=3, factor = 0.5, min_lr=0.0001, verbose=1)
+])
+
+result_df = DataFrame(result.history)
+result_df['epochs'] = result_df.index+1
+result_df.set_index('epochs', inplace=True)
+result_df
+
+#학습결과 시각화
+# 그래프 기본 설정
+# ----------------------------------------
+plt.rcParams["font.family"] = 'Malgun Gothic'
+plt.rcParams["font.size"] = 16
+plt.rcParams['axes.unicode_minus'] = False
+
+# 그래프를 그리기 위한 객체 생성
+# ----------------------------------------
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 5), dpi=150)
+
+# 1) 훈련 및 검증 손실 그리기
+# ----------------------------------------
+sns.lineplot(x=result_df.index, y='loss', data=result_df, color='blue', label='훈련 손실률', ax=ax1)
+sns.lineplot(x=result_df.index, y='val_loss', data=result_df, color='orange', label='검증 손실률', ax=ax1)
+ax1.set_title('훈련 및 검증 손실률')
+ax1.set_xlabel('반복회차')
+ax1.set_ylabel('손실률')
+ax1.grid()
+ax1.legend()
+
+# 2) 훈련 및 검증 절대오차 그리기
+# ----------------------------------------
+sns.lineplot(x=result_df.index, y='mae', data=result_df, color = 'blue', label = '훈련 절대오차', ax=ax2)
+sns.lineplot(x=result_df.index, y='val_mae', data=result_df, color = 'orange', label = '검증 절대오차', ax=ax2)
+ax2.set_title('훈련 및 검증 절대오차')
+ax2.set_xlabel('반복회차')
+ax2.set_ylabel('절대오차')
+ax2.grid()
+ax2.legend()
+
+#plt.savefig('result.png', dpi=200, bbox_inches='tight')
+plt.show()
+plt.close()
+
+#모델 성능 평가
+evaluate = model.evaluate(pca_x_test, std_y_test)
+print("최종 손실률: %f, 최종 절대오차: %f" % (evaluate[0], evaluate[1]))
+
+test_predictions = model.predict(pca_x_test)
+test_predictions
+
+#결과 데이터셋 구성
+result_df = pca_x_test.copy()
+result_df['실제값'] = std_y_test['MEDV'].values
+result_df['예측값'] = test_predictions.flatten()
+result_df['예측오차'] = result_df['실제값']-result_df['예측값']
+result_df.head()
+
+#실제 결과값과 머신러닝에 의한 예측값 비교
+plt.rcParams["font.family"] = 'Malgun Gothic'
+plt.rcParams["font.size"] = 16
+plt.rcParams['axes.unicode_minus'] = False
+
+fig, ax1 = plt.subplots(1, 1, figsize=(16, 8), dpi=150)
+sns.scatterplot(x='AGE', y='실제값', data=result_df, label='실제값', ax=ax1)
+sns.scatterplot(x='AGE', y='예측값', data=result_df, label='예측값', ax=ax1)
+sns.regplot(x='AGE', y='실제값', data=result_df, ax=ax1)
+sns.regplot(x='AGE', y='예측값', data=result_df, ax=ax1)
+ax1.set_xlabel('AGE')
+ax1.set_ylabel('MEDV')
+ax1.legend()
+ax1.grid()
+
+#plt.savefig('1.png', dpi=200, bbox_inches='tight')
+plt.show()
+plt.close()
+
+#예측값에 대한 역표준화
+scaler.inverse_transform(result_df['예측값'])
